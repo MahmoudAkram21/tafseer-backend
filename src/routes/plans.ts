@@ -1,0 +1,254 @@
+import { Router } from 'express';
+import { Prisma } from '@prisma/client';
+import prisma from '../lib/prisma';
+import { optionalAuth, requireAuth } from '../middleware/auth';
+
+const router = Router();
+
+function formatPlan(plan: any) {
+  return {
+    id: plan.id,
+    name: plan.name,
+    description: plan.description,
+    price: Number(plan.price),
+    currency: plan.currency,
+    durationDays: plan.durationDays,
+    scope: plan.scope,
+    countryCodes: plan.countryCodes ?? null,
+    maxDreams: plan.maxDreams,
+    maxInterpretations: plan.maxInterpretations,
+    letterQuota: plan.letterQuota,
+    audioMinutesQuota: plan.audioMinutesQuota,
+    features: plan.features ?? [],
+    isActive: plan.isActive,
+    createdAt: plan.createdAt,
+    updatedAt: plan.updatedAt,
+  };
+}
+
+router.get('/', optionalAuth, async (req, res) => {
+  try {
+    const includeInactive = req.query.includeInactive === 'true';
+    const requesterRole = req.user?.role;
+
+    const isElevated = requesterRole === 'admin' || requesterRole === 'super_admin';
+
+    const plans = await prisma.plan.findMany({
+      where: includeInactive && isElevated ? {} : { isActive: true },
+      orderBy: { price: 'asc' },
+    });
+
+    return res.json({ plans: plans.map(formatPlan) });
+  } catch (error) {
+    console.error('[Plans] Fetch error:', error);
+    return res.status(500).json({ error: 'Failed to fetch plans' });
+  }
+});
+
+router.post('/', requireAuth, async (req, res) => {
+  try {
+    if (req.user!.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Forbidden - Super admin access required' });
+    }
+
+    const {
+      name,
+      description,
+      price,
+      currency,
+      scope = 'international',
+      durationDays,
+      maxDreams,
+      maxInterpretations,
+      letterQuota,
+      audioMinutesQuota,
+      countryCodes,
+      features,
+      isActive = true,
+    } = req.body ?? {};
+
+    if (!name || typeof name !== 'string') {
+      return res.status(400).json({ error: 'Plan name is required' });
+    }
+
+    if (price === undefined || price === null || Number.isNaN(Number(price))) {
+      return res.status(400).json({ error: 'Valid plan price is required' });
+    }
+
+    if (!currency || typeof currency !== 'string') {
+      return res.status(400).json({ error: 'Plan currency is required' });
+    }
+
+    if (!durationDays || Number.isNaN(Number(durationDays))) {
+      return res.status(400).json({ error: 'Plan durationDays is required' });
+    }
+
+    const plan = await prisma.plan.create({
+      data: {
+        name,
+        description,
+        price: new Prisma.Decimal(price),
+        currency: currency.toUpperCase(),
+        scope,
+        durationDays: Number(durationDays),
+        maxDreams: maxDreams !== undefined ? Number(maxDreams) : null,
+        maxInterpretations: maxInterpretations !== undefined ? Number(maxInterpretations) : null,
+        letterQuota: letterQuota !== undefined ? Number(letterQuota) : null,
+        audioMinutesQuota: audioMinutesQuota !== undefined ? Number(audioMinutesQuota) : null,
+        countryCodes: countryCodes ?? null,
+        features: features ?? [],
+        isActive: Boolean(isActive),
+      },
+    });
+
+    return res.status(201).json({ plan: formatPlan(plan) });
+  } catch (error) {
+    console.error('[Plans] Create error:', error);
+    return res.status(500).json({ error: 'Failed to create plan' });
+  }
+});
+
+router.patch('/:id', requireAuth, async (req, res) => {
+  try {
+    if (req.user!.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Forbidden - Super admin access required' });
+    }
+
+    const { id } = req.params;
+
+    const existingPlan = await prisma.plan.findUnique({ where: { id } });
+
+    if (!existingPlan) {
+      return res.status(404).json({ error: 'Plan not found' });
+    }
+
+    const {
+      name,
+      description,
+      price,
+      currency,
+      scope,
+      durationDays,
+      maxDreams,
+      maxInterpretations,
+      letterQuota,
+      audioMinutesQuota,
+      countryCodes,
+      features,
+      isActive,
+    } = req.body ?? {};
+
+    const updateData: Record<string, unknown> = {};
+
+    if (name !== undefined) updateData.name = name;
+    if (description !== undefined) updateData.description = description;
+    if (price !== undefined && !Number.isNaN(Number(price))) {
+      updateData.price = new Prisma.Decimal(price);
+    }
+    if (currency !== undefined) updateData.currency = currency.toUpperCase();
+    if (scope !== undefined) updateData.scope = scope;
+    if (durationDays !== undefined && !Number.isNaN(Number(durationDays))) {
+      updateData.durationDays = Number(durationDays);
+    }
+    if (maxDreams !== undefined) updateData.maxDreams = maxDreams !== null ? Number(maxDreams) : null;
+    if (maxInterpretations !== undefined) {
+      updateData.maxInterpretations = maxInterpretations !== null ? Number(maxInterpretations) : null;
+    }
+    if (letterQuota !== undefined) {
+      updateData.letterQuota = letterQuota !== null ? Number(letterQuota) : null;
+    }
+    if (audioMinutesQuota !== undefined) {
+      updateData.audioMinutesQuota = audioMinutesQuota !== null ? Number(audioMinutesQuota) : null;
+    }
+    if (countryCodes !== undefined) updateData.countryCodes = countryCodes;
+    if (features !== undefined) updateData.features = features;
+    if (isActive !== undefined) updateData.isActive = Boolean(isActive);
+
+    const plan = await prisma.plan.update({
+      where: { id },
+      data: updateData,
+    });
+
+    return res.json({ plan: formatPlan(plan) });
+  } catch (error) {
+    console.error('[Plans] Update error:', error);
+    return res.status(500).json({ error: 'Failed to update plan' });
+  }
+});
+
+router.post('/subscribe', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user!.userId;
+    const { planId } = req.body ?? {};
+
+    if (!planId) {
+      return res.status(400).json({ error: 'planId is required' });
+    }
+
+    const plan = await prisma.plan.findUnique({ where: { id: planId } });
+
+    if (!plan) {
+      return res.status(404).json({ error: 'Plan not found' });
+    }
+
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + plan.durationDays);
+
+    const subscription = await prisma.$transaction(async (tx) => {
+      const upserted = await tx.userPlan.upsert({
+        where: {
+          userId_planId: {
+            userId,
+            planId,
+          },
+        },
+        create: {
+          userId,
+          planId,
+          expiresAt,
+          isActive: true,
+          lettersUsed: 0,
+          audioMinutesUsed: 0,
+        },
+        update: {
+          expiresAt,
+          isActive: true,
+          lettersUsed: 0,
+          audioMinutesUsed: 0,
+        },
+        include: {
+          plan: true,
+        },
+      });
+
+      await tx.profile.update({
+        where: { id: userId },
+        data: { currentPlanId: planId },
+      });
+
+      await tx.payment.create({
+        data: {
+          userId,
+          planId,
+          amount: plan.price,
+          currency: plan.currency,
+          status: 'succeeded',
+          provider: 'manual',
+          reference: `SUB-${Date.now()}`,
+        },
+      });
+
+      return upserted;
+    });
+
+    return res.json({ subscription: { ...subscription, plan: formatPlan(subscription.plan) } });
+  } catch (error) {
+    console.error('[Plans] Subscribe error:', error);
+    return res.status(500).json({ error: 'Failed to subscribe to plan' });
+  }
+});
+
+export default router;
+
+
+
